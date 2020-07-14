@@ -6,7 +6,7 @@
 * to you under the Apache License, Version 2.0 (the
 * "License"); you may not use this file except in compliance
 * with the License.  You may obtain a copy of the License at
- 
+
 * http://www.apache.org/licenses/LICENSE-2.0
 
 * Unless required by applicable law or agreed to in writing,
@@ -35,11 +35,6 @@ import java.util.stream.Collectors;
 import javax.inject.Inject;
 import javax.inject.Named;
 
-import lombok.EqualsAndHashCode;
-import lombok.Getter;
-import lombok.ToString;
-import lombok.extern.slf4j.Slf4j;
-
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.AnnotationIntrospector;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -52,6 +47,7 @@ import com.fasterxml.jackson.databind.node.BooleanNode;
 import com.fasterxml.jackson.databind.node.DoubleNode;
 import com.fasterxml.jackson.databind.node.FloatNode;
 import com.fasterxml.jackson.databind.node.IntNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.POJONode;
@@ -77,12 +73,17 @@ import org.apache.directory.scim.spec.schema.AttributeContainer;
 import org.apache.directory.scim.spec.schema.Schema;
 import org.apache.directory.scim.spec.schema.Schema.Attribute;
 
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.ToString;
+import lombok.extern.slf4j.Slf4j;
+
 @Named
 @Slf4j
 @EqualsAndHashCode
 @ToString
 public class UpdateRequest<T extends ScimResource> {
-  
+
   private static final String OPERATION = "op";
   private static final String PATH = "path";
   private static final String VALUE = "value";
@@ -100,7 +101,7 @@ public class UpdateRequest<T extends ScimResource> {
   private Registry registry;
 
   private Map<Attribute, Integer> addRemoveOffsetMap = new HashMap<>();
-  
+
   @Inject
   public UpdateRequest(Registry registry) {
     this.registry = registry;
@@ -141,15 +142,15 @@ public class UpdateRequest<T extends ScimResource> {
     if (!initialized) {
       throw new IllegalStateException("UpdateRequest was not initialized");
     }
-    
+
     if (patchOperations == null) {
       try {
-        patchOperations = createPatchOperations(); 
+        patchOperations = createPatchOperations();
       } catch (IllegalArgumentException | IllegalAccessException | JsonProcessingException e) {
         throw new IllegalStateException("Error creating the patch list", e);
       }
     }
-    
+
     return patchOperations;
   }
 
@@ -161,13 +162,13 @@ public class UpdateRequest<T extends ScimResource> {
         List<Object> collection1 = obj1 != null ? (List<Object>) field.get(obj1) : null;
         @SuppressWarnings("unchecked")
         List<Object> collection2 = obj2 != null ? (List<Object>) field.get(obj2) : null;
-        
+
         Set<Object> priorities = findCommonElements(collection1, collection2);
         PrioritySortingComparitor prioritySortingComparitor = new PrioritySortingComparitor(priorities);
         if (collection1 != null) {
           Collections.sort(collection1, prioritySortingComparitor);
         }
-        
+
         if (collection2 != null) {
           Collections.sort(collection2, prioritySortingComparitor);
         }
@@ -183,21 +184,50 @@ public class UpdateRequest<T extends ScimResource> {
     if (list1 == null || list2 == null) {
       return Collections.emptySet();
     }
-    
+
     Set<Object> set1 = new HashSet<>(list1);
     Set<Object> set2 = new HashSet<>(list2);
-    
+
     set1 = set1.stream().map(PrioritySortingComparitor::getComparableValue).collect(Collectors.toSet());
     set2 = set2.stream().map(PrioritySortingComparitor::getComparableValue).collect(Collectors.toSet());
-    
+
     set1.retainAll(set2);
     return set1;
   }
 
   private T applyPatchOperations() {
+    List<PatchOperation> patchOperations = getPatchOperations();
+    if (patchOperations == null || patchOperations.isEmpty() || original == null) {
+      return original;
+    }
+
+    ObjectMapper objMapper = new ObjectMapper();
+    JaxbAnnotationModule jaxbAnnotationModule = new JaxbAnnotationModule();
+    objMapper.registerModule(jaxbAnnotationModule);
+    objMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+    AnnotationIntrospector jaxbIntrospector = new JaxbAnnotationIntrospector(objMapper.getTypeFactory());
+    AnnotationIntrospector jacksonIntrospector = new JacksonAnnotationIntrospector();
+    AnnotationIntrospector pair = new AnnotationIntrospectorPair(jacksonIntrospector, jaxbIntrospector);
+    objMapper.setAnnotationIntrospector(pair);
+
+    JsonNode originalNode = objMapper.valueToTree(original);
+    nullEmptyLists(originalNode);
+
+    for (PatchOperation patchOperation : patchOperations) {
+      PatchOperationPath patchPath = patchOperation.getPath();
+      ValuePathExpression patchValuePathExp = patchPath.getValuePathExpression();
+      patchValuePathExp.getAttributePath();
+      patchValuePathExp.getAttributeExpression();
+    }
+
+
+
+
+
+
     throw new java.lang.UnsupportedOperationException("PATCH operations are not implemented at this time.");
   }
-  
+
   /**
    * There is a know issue with the diffing tool that the tool will attempt to move empty arrays. By
    * nulling out the empty arrays during comparison, this will prevent that error from occurring. Because
@@ -206,19 +236,19 @@ public class UpdateRequest<T extends ScimResource> {
    */
   private static void nullEmptyLists(JsonNode node) {
     List<String> objectsToDelete = new ArrayList<>();
-    
+
     if (node != null) {
       Iterator<Map.Entry<String, JsonNode>> children = node.fields();
       while(children.hasNext()) {
         Map.Entry<String, JsonNode> child = children.next();
         String name = child.getKey();
         JsonNode childNode = child.getValue();
-        
-        //Attempt to delete children before analyzing 
+
+        //Attempt to delete children before analyzing
         if (childNode.isContainerNode()) {
           nullEmptyLists(childNode);
         }
-        
+
         if (childNode instanceof ArrayNode) {
           ArrayNode ar = (ArrayNode)childNode;
           if (ar.size() == 0) {
@@ -226,7 +256,7 @@ public class UpdateRequest<T extends ScimResource> {
           }
         }
       }
-      
+
       if (!objectsToDelete.isEmpty() && node instanceof ObjectNode) {
         ObjectNode on = (ObjectNode)node;
         for(String name : objectsToDelete) {
@@ -244,7 +274,7 @@ public class UpdateRequest<T extends ScimResource> {
     Set<String> keys = new HashSet<>();
     keys.addAll(originalExtensions.keySet());
     keys.addAll(resourceExtensions.keySet());
-    
+
     for(String key: keys) {
       Schema extSchema = registry.getSchema(key);
       ScimExtension originalExtension = originalExtensions.get(key);
@@ -261,14 +291,14 @@ public class UpdateRequest<T extends ScimResource> {
     AnnotationIntrospector jacksonIntrospector = new JacksonAnnotationIntrospector();
     AnnotationIntrospector pair = new AnnotationIntrospectorPair(jacksonIntrospector, jaxbIntrospector);
     objMapper.setAnnotationIntrospector(pair);
-    
+
     JsonNode node1 = objMapper.valueToTree(original);
     nullEmptyLists(node1);
     JsonNode node2 = objMapper.valueToTree(resource);
     nullEmptyLists(node2);
     JsonNode differences = JsonDiff.asJson(node1, node2);
-    
-    
+
+
     /*
     Commenting out debug statement to prevent PII from appearing in log
     ObjectWriter writer = objMapper.writerWithDefaultPrettyPrinter();
@@ -276,7 +306,7 @@ public class UpdateRequest<T extends ScimResource> {
       log.debug("Original: "+writer.writeValueAsString(node1));
       log.debug("Resource: "+writer.writeValueAsString(node2));
     } catch (IOException e) {
-      
+
     }*/
 
     /*try {
@@ -324,8 +354,41 @@ public class UpdateRequest<T extends ScimResource> {
       if (!nodeOperations.isEmpty()) {
         operations.addAll(nodeOperations);
       }
-    }    
-    
+    }
+
+    return operations;
+  }
+
+  JsonNode convertToPatchNode(List<PatchOperation> operations) throws IllegalArgumentException, IllegalAccessException, JsonProcessingException {
+    if (operations == null || operations.isEmpty()) {
+      return null;
+    }
+
+    ArrayNode root = new ArrayNode(new JsonNodeFactory(false));
+    for (PatchOperation patchOp : operations) {
+      root.add(convertPatchOperationToNode(patchOp));
+    }
+
+    return root;
+
+
+    if (!(node instanceof ArrayNode)) {
+      throw new RuntimeException("Expecting an instance of a ArrayNode, but got: " + node.getClass());
+    }
+
+    ArrayNode root = (ArrayNode) node;
+    for (int i = 0; i < root.size(); i++) {
+      ObjectNode patchNode = (ObjectNode) root.get(i);
+      JsonNode operationNode = patchNode.get(OPERATION);
+      JsonNode pathNode = patchNode.get(PATH);
+      JsonNode valueNode = patchNode.get(VALUE);
+
+      List<PatchOperation> nodeOperations = convertNodeToPatchOperations(operationNode.asText(), pathNode.asText(), valueNode);
+      if (!nodeOperations.isEmpty()) {
+        operations.addAll(nodeOperations);
+      }
+    }
+
     return operations;
   }
 
@@ -336,29 +399,35 @@ public class UpdateRequest<T extends ScimResource> {
 
     if (diffPath != null && diffPath.length() >= 1) {
       ParseData parseData = new ParseData(diffPath);
-      
+
       if (parseData.pathParts.isEmpty()) {
         operations.add(handleExtensions(valueNode, patchOpType, parseData));
       } else {
         operations.addAll(handleAttributes(valueNode, patchOpType, parseData));
       }
     }
-    
+
     return operations;
+  }
+
+  private ObjectNode convertPatchOperationToNode(PatchOperation operation) {
+
+
+    return null;
   }
 
   private PatchOperation handleExtensions(JsonNode valueNode, Type patchOpType, ParseData parseData) throws JsonProcessingException {
     PatchOperation operation = new PatchOperation();
     operation.setOperation(patchOpType);
-    
+
     AttributeReference attributeReference = new AttributeReference(parseData.pathUri, null);
     PatchOperationPath patchOperationPath = new PatchOperationPath();
     ValuePathExpression valuePathExpression = new ValuePathExpression(attributeReference);
     patchOperationPath.setValuePathExpression(valuePathExpression);
-    
+
     operation.setPath(patchOperationPath);
     operation.setValue(determineValue(patchOpType, valueNode, parseData));
-    
+
     return operation;
   }
 
@@ -366,7 +435,7 @@ public class UpdateRequest<T extends ScimResource> {
   private List<PatchOperation> handleAttributes(JsonNode valueNode, PatchOperation.Type patchOpType, ParseData parseData) throws IllegalAccessException, JsonProcessingException {
     log.info("in handleAttributes");
     List<PatchOperation> operations = new ArrayList<>();
-    
+
     List<String> attributeReferenceList = new ArrayList<>();
     FilterExpression valueFilterExpression = null;
     List<String> subAttributes = new ArrayList<>();
@@ -374,7 +443,7 @@ public class UpdateRequest<T extends ScimResource> {
     boolean processingMultiValued = false;
     boolean processedMultiValued = false;
     boolean done = false;
-    
+
     int i = 0;
     for (String pathPart : parseData.pathParts) {
       log.info(pathPart);
@@ -403,7 +472,7 @@ public class UpdateRequest<T extends ScimResource> {
         }
       } else {
         Attribute attribute = parseData.ac.getAttribute(pathPart);
-        
+
         if (attribute != null) {
           if (processedMultiValued) {
             subAttributes.add(pathPart);
@@ -411,16 +480,16 @@ public class UpdateRequest<T extends ScimResource> {
             log.info("Adding " + pathPart + " to attributeReferenceList");
             attributeReferenceList.add(pathPart);
           }
-  
+
           parseData.traverseObjects(pathPart, attribute);
-  
-          if (patchOpType == Type.REPLACE && 
+
+          if (patchOpType == Type.REPLACE &&
               (parseData.resourceObject != null && parseData.resourceObject instanceof Collection && !((Collection<?>)parseData.resourceObject).isEmpty()) &&
-              (parseData.originalObject == null || 
+              (parseData.originalObject == null ||
               (parseData.originalObject instanceof Collection && ((Collection<?>)parseData.originalObject).isEmpty()))) {
             patchOpType = Type.ADD;
           }
-          
+
           if (attribute.isMultiValued()) {
             processingMultiValued = true;
           } else if (attribute.getType() != Attribute.Type.COMPLEX) {
@@ -430,29 +499,29 @@ public class UpdateRequest<T extends ScimResource> {
       }
       ++i;
     }
-    
-    if (patchOpType == Type.REPLACE && (parseData.resourceObject == null || 
+
+    if (patchOpType == Type.REPLACE && (parseData.resourceObject == null ||
         (parseData.resourceObject instanceof Collection && ((Collection<?>)parseData.resourceObject).isEmpty()))) {
       patchOpType = Type.REMOVE;
       valueNode = null;
     }
-    
+
     if (patchOpType == Type.REPLACE && parseData.originalObject == null) {
       patchOpType = Type.ADD;
     }
-        
+
     if (!attributeReferenceList.isEmpty()) {
       Object value = determineValue(patchOpType, valueNode, parseData);
-      
+
       if (value != null && value instanceof ArrayList) {
         List<Object> objList = (List<Object>)value;
-        
+
         if (!objList.isEmpty()) {
-          Object firstElement = objList.get(0); 
+          Object firstElement = objList.get(0);
           if (firstElement instanceof ArrayList) {
             objList = (List<Object>) firstElement;
           }
-          
+
           for (Object obj : objList) {
             PatchOperation operation = buildPatchOperation(patchOpType, parseData, attributeReferenceList, valueFilterExpression, subAttributes, obj);
             if (operation != null) {
@@ -467,10 +536,10 @@ public class UpdateRequest<T extends ScimResource> {
         }
       }
     }
-    
+
     return operations;
   }
-  
+
   private PatchOperation buildPatchOperation(PatchOperation.Type patchOpType, ParseData parseData, List<String> attributeReferenceList,
                                              FilterExpression valueFilterExpression, List<String> subAttributes, Object value) {
     PatchOperation operation = new PatchOperation();
@@ -488,10 +557,10 @@ public class UpdateRequest<T extends ScimResource> {
 
     operation.setPath(patchOperationPath);
     operation.setValue(value);
-    
+
     return operation;
   }
-    
+
   private Object determineValue(PatchOperation.Type patchOpType, JsonNode valueNode, ParseData parseData) throws JsonProcessingException {
     if (patchOpType == PatchOperation.Type.REMOVE) {
       return null;
@@ -570,7 +639,7 @@ public class UpdateRequest<T extends ScimResource> {
       int index = Integer.parseInt(pathPart);
 
       Attribute attr = (Attribute) ac;
-      
+
       Integer addRemoveOffset = addRemoveOffsetMap.getOrDefault(attr, 0);
       switch (patchOpType) {
       case ADD:
@@ -584,12 +653,12 @@ public class UpdateRequest<T extends ScimResource> {
         // Do Nothing
         break;
       }
-      
+
       int newindex = index + addRemoveOffset;
       if (newindex < 0) {
         log.error("Attempting to retrieve a negative index:{} on pathPath: {}", newindex, pathPart);
       }
-      
+
       originalObject = lookupIndexInArray(originalObject, newindex);
       resourceObject = lookupIndexInArray(resourceObject, index);
     }
